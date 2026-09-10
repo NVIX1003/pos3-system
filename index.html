@@ -117,7 +117,6 @@
         const finalTranscript = ref('');
         const showModal = ref(false);
         const parsedOrder = ref({});
-
         const customerMap = ref({});
         const priceMap = ref({});
 
@@ -232,9 +231,131 @@
           return result;
         }
 
-        const processTextWithRegex = (textInput) => {
+// 純 JavaScript 意圖解析引擎 (判斷：點餐 / 儲值 / 查詢餘額)
+        const processTextWithRegex = async (textInput) => {
           isProcessing.value = true;
-          statusMessage.value = '⚡ 瞬間解析中...';
+          statusMessage.value = '⚡ 瞬間解析意圖中...';
+
+          const cleanedText = normalizeText(textInput);
+
+          // 1. 比對顧客身份
+          let matchedCustomer = { name: '未識別', id: null, balance: 0 };
+          for (const key of Object.keys(customerMap.value)) {
+            if (cleanedText.includes(key)) {
+              const cInfo = customerMap.value[key];
+              matchedCustomer = {
+                name: cInfo.fullName,
+                id: cInfo.id,
+                balance: cInfo.balance
+              };
+              break;
+            }
+          }
+
+          // -------------------------------------------------------------
+          // 狀態 A：查詢餘額模式 (文字含「餘額」、「多少錢」、「查」)
+          // -------------------------------------------------------------
+          if (cleanedText.includes('餘額') || cleanedText.includes('多少錢') || cleanedText.includes('查')) {
+            if (!matchedCustomer.id) {
+              alert('⚠️ 未能識別顧客身份，請重試（例如：老黃餘額）');
+            } else {
+              alert(`🔍 【顧客查詢】\n\n姓名：${matchedCustomer.name}\n當前帳戶餘額為：NT$ ${matchedCustomer.balance}`);
+            }
+            isProcessing.value = false;
+            resetForm();
+            return;
+          }
+
+          // -------------------------------------------------------------
+          // 狀態 B：儲值模式 (文字含「儲值」、「存」)
+          // -------------------------------------------------------------
+          if (cleanedText.includes('儲值') || cleanedText.includes('存')) {
+            if (!matchedCustomer.id) {
+              alert('⚠️ 未能識別顧客身份，請重試（例如：老黃儲值1000元）');
+              isProcessing.value = false;
+              return;
+            }
+
+            // 提取儲值金額 (抓取數字)
+            const amountMatch = cleanedText.match(/\d+/);
+            if (!amountMatch) {
+              alert('⚠️ 未能識別儲值金額，請重試');
+              isProcessing.value = false;
+              return;
+            }
+
+            const depositAmount = parseInt(amountMatch[0], 10);
+            const newBalance = matchedCustomer.balance + depositAmount;
+
+            // 確認彈窗並執行儲值
+            if (confirm(`💵 【確認儲值】\n\n顧客：${matchedCustomer.name}\n原餘額：NT$ ${matchedCustomer.balance}\n本次儲值：NT$ ${depositAmount}\n儲值後餘額將為：NT$ ${newBalance}\n\n是否確定儲值？`)) {
+              
+              // 1. 更新 Supabase 餘額
+              const { error: updateErr } = await supabaseClient
+                .from('customers')
+                .update({ balance: newBalance })
+                .eq('id', matchedCustomer.id);
+
+              if (updateErr) {
+                alert('儲值失敗：' + updateErr.message);
+              } else {
+                // 2. 寫入交易紀錄 (儲值紀錄)
+                await supabaseClient
+                  .from('orders')
+                  .insert([{
+                    customer_id: matchedCustomer.id,
+                    type: 'deposit',
+                    total_amount: depositAmount
+                  }]);
+
+                alert(`🎉 儲值成功！\n【${matchedCustomer.name}】最新餘額為：NT$ ${newBalance}`);
+                await fetchDataFromDB(); // 刷新最新資料
+              }
+            }
+
+            isProcessing.value = false;
+            resetForm();
+            return;
+          }
+
+          // -------------------------------------------------------------
+          // 狀態 C：一般點餐模式 (預設)
+          // -------------------------------------------------------------
+          const menuKeys = Object.keys(priceMap.value);
+          if (menuKeys.length === 0) {
+            statusMessage.value = '菜單資料為空，無法比對';
+            isProcessing.value = false;
+            return;
+          }
+
+          const menuItemsRegexStr = menuKeys.join('|');
+          const itemRegex = new RegExp(`(\\d+)\\s*(?:杯|份|個|張)?\\s*(?:冰|熱|大|小)?\\s*(${menuItemsRegexStr})`, 'g');
+
+          const items = [];
+          let calculatedTotal = 0;
+          let match;
+
+          while ((match = itemRegex.exec(cleanedText)) !== null) {
+            const qty = parseInt(match[1], 10);
+            const itemName = match[2];
+            const price = priceMap.value[itemName] || 0;
+
+            items.push({ name: itemName, qty: qty, price: price });
+            calculatedTotal += price * qty;
+          }
+
+          parsedOrder.value = {
+            customer_id: matchedCustomer.id,
+            customer_name: matchedCustomer.name,
+            customer_balance: matchedCustomer.balance,
+            items: items,
+            total_amount: calculatedTotal
+          };
+
+          showModal.value = true;
+          statusMessage.value = '解析完成！';
+          isProcessing.value = false;
+        };
 
           const cleanedText = normalizeText(textInput);
 
