@@ -104,7 +104,7 @@
     // Supabase 設定
     // ------------------------------------------------------------------
     const SUPABASE_URL = 'https://lzcrebktvlteiyrrcewo.supabase.co'; 
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6Y3JlYmt0dmx0ZWl5cnJjZXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYyODMsImV4cCI6MjEwNDU2MjI4M30.da__MIRPKOMnCBaUlDzaZibGi7IVh95Br22bSWhUNrg'; // 請確認替換為你的金鑰
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6Y3JlYmt0dmx0ZWl5cnJjZXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYyODMsImV4cCI6MjEwNDU2MjI4M30.da__MIRPKOMnCBaUlDzaZibGi7IVh95Br22bSWhUNrg';
 
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -231,7 +231,7 @@
           return result;
         }
 
-// 純 JavaScript 意圖解析引擎 (判斷：點餐 / 儲值 / 查詢餘額)
+        // 純 JavaScript 意圖解析引擎 (判斷：點餐 / 儲值 / 查詢餘額)
         const processTextWithRegex = async (textInput) => {
           isProcessing.value = true;
           statusMessage.value = '⚡ 瞬間解析意圖中...';
@@ -341,62 +341,6 @@
             const price = priceMap.value[itemName] || 0;
 
             items.push({ name: itemName, qty: qty, price: price });
-            calculatedTotal += price * qty;
-          }
-
-          parsedOrder.value = {
-            customer_id: matchedCustomer.id,
-            customer_name: matchedCustomer.name,
-            customer_balance: matchedCustomer.balance,
-            items: items,
-            total_amount: calculatedTotal
-          };
-
-          showModal.value = true;
-          statusMessage.value = '解析完成！';
-          isProcessing.value = false;
-        };
-
-          const cleanedText = normalizeText(textInput);
-
-          let matchedCustomer = { name: '未識別', id: null, balance: 0 };
-          for (const key of Object.keys(customerMap.value)) {
-            if (cleanedText.includes(key)) {
-              const cInfo = customerMap.value[key];
-              matchedCustomer = {
-                name: cInfo.fullName,
-                id: cInfo.id,
-                balance: cInfo.balance
-              };
-              break;
-            }
-          }
-
-          const menuKeys = Object.keys(priceMap.value);
-          if (menuKeys.length === 0) {
-            statusMessage.value = '菜單資料為空，無法比對';
-            isProcessing.value = false;
-            return;
-          }
-
-          const menuItemsRegexStr = menuKeys.join('|');
-          const itemRegex = new RegExp(`(\\d+)\\s*(?:杯|份|個|張)?\\s*(?:冰|熱|大|小)?\\s*(${menuItemsRegexStr})`, 'g');
-
-          const items = [];
-          let calculatedTotal = 0;
-          let match;
-
-          while ((match = itemRegex.exec(cleanedText)) !== null) {
-            const qty = parseInt(match[1], 10);
-            const itemName = match[2];
-            const price = priceMap.value[itemName] || 0;
-
-            items.push({
-              name: itemName,
-              qty: qty,
-              price: price
-            });
-
             calculatedTotal += price * qty;
           }
 
