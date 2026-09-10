@@ -51,11 +51,21 @@
             <span class="text-indigo-600 font-semibold">{{ parsedOrder.customer_name || '未識別' }}</span>
           </div>
           
-          <div v-if="parsedOrder.customer_id" class="flex justify-between items-center text-xs text-slate-500 bg-slate-50 p-2 rounded">
-            <span>當前帳戶餘額：</span>
-            <span class="font-bold text-slate-700">NT$ {{ parsedOrder.customer_balance }}</span>
+          <!-- 會員餘額與扣款預測區塊 -->
+          <div v-if="parsedOrder.customer_id" class="bg-slate-50 p-2.5 rounded-xl space-y-1.5 border border-slate-200">
+            <div class="flex justify-between items-center text-xs text-slate-500">
+              <span>當前帳戶餘額：</span>
+              <span class="font-bold text-slate-700">NT$ {{ parsedOrder.customer_balance }}</span>
+            </div>
+            <div class="flex justify-between items-center text-xs font-semibold pt-1 border-t border-slate-200">
+              <span>扣款後預計餘額：</span>
+              <span :class="remainingBalance >= 0 ? 'text-indigo-600' : 'text-rose-600'">
+                NT$ {{ remainingBalance }}
+              </span>
+            </div>
           </div>
 
+          <!-- 點餐品項區塊 -->
           <div class="border-t my-2 pt-2">
             <p class="font-bold mb-1">點餐品項：</p>
             <ul v-if="parsedOrder.items && parsedOrder.items.length > 0" class="space-y-1">
@@ -67,12 +77,14 @@
             <p v-else class="text-xs text-rose-500 py-2">⚠️ 未能比對到菜單品項，請重新確認</p>
           </div>
 
+          <!-- 總金額 -->
           <div class="flex justify-between text-base font-bold text-slate-800 border-t pt-2">
             <span>總金額：</span>
             <span class="text-emerald-600">NT$ {{ parsedOrder.total_amount || 0 }}</span>
           </div>
         </div>
 
+        <!-- 按鈕操作區 -->
         <div class="flex space-x-3 pt-2">
           <button @click="cancelOrder" class="flex-1 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition">
             取消
@@ -86,13 +98,13 @@
   </div>
 
   <script type="module">
-    const { createApp, ref, onMounted } = Vue;
+    const { createApp, ref, computed, onMounted } = Vue;
 
     // ------------------------------------------------------------------
-    // Supabase 設定（請將下面的 URL 與 ANON KEY 替換為你在 Supabase 的設定）
+    // Supabase 設定
     // ------------------------------------------------------------------
     const SUPABASE_URL = 'https://lzcrebktvlteiyrrcewo.supabase.co'; 
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6Y3JlYmt0dmx0ZWl5cnJjZXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYyODMsImV4cCI6MjEwNDU2MjI4M30.da__MIRPKOMnCBaUlDzaZibGi7IVh95Br22bSWhUNrg';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6Y3JlYmt0dmx0ZWl5cnJjZXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYyODMsImV4cCI6MjEwNDU2MjI4M30.da__MIRPKOMnCBaUlDzaZibGi7IVh95Br22bSWhUNrg'; // 請確認替換為你的金鑰
 
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -106,25 +118,28 @@
         const showModal = ref(false);
         const parsedOrder = ref({});
 
-        // 從資料庫動態載入的對照字典
-        const customerMap = ref({}); // { "老黃": { id: 1, fullName: "黃大雄", balance: 1000 } }
-        const priceMap = ref({});    // { "咖啡": 80, "紅茶": 40 }
+        const customerMap = ref({});
+        const priceMap = ref({});
 
         let recognition = null;
 
-        // 常見語音轉文字錯字自動修正字典
         const FIX_SPELL_MAP = {
           "首沖": "手沖",
           "美事": "美式",
           "鮮綠": "綠茶"
         };
 
+        // 計算預計扣款後的剩餘金額
+        const remainingBalance = computed(() => {
+          if (!parsedOrder.value.customer_id) return 0;
+          return (parsedOrder.value.customer_balance || 0) - (parsedOrder.value.total_amount || 0);
+        });
+
         // 從 Supabase 載入顧客與菜單資料
         const fetchDataFromDB = async () => {
           try {
             statusMessage.value = '連線資料庫中...';
 
-            // 1. 抓取菜單資料
             const { data: menuData, error: menuErr } = await supabaseClient
               .from('menu_items')
               .select('name, price')
@@ -138,7 +153,6 @@
             });
             priceMap.value = pMap;
 
-            // 2. 抓取顧客資料與帳戶餘額
             const { data: customerData, error: custErr } = await supabaseClient
               .from('customers')
               .select('id, nickname, full_name, balance');
@@ -165,7 +179,6 @@
         onMounted(() => {
           fetchDataFromDB();
 
-          // 初始化 Web Speech API
           const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
           if (SpeechRecognition) {
             recognition = new SpeechRecognition();
@@ -205,7 +218,6 @@
           }
         });
 
-        // 轉換中文數字為阿拉伯數字與校正錯字
         function normalizeText(text) {
           const cnNums = { '一': '1', '二': '2', '兩': '2', '三': '3', '四': '4', '五': '5', '六': '6', '七': '7', '八': '8', '九': '9', '十': '10' };
           let result = text;
@@ -220,14 +232,12 @@
           return result;
         }
 
-        // 純 JavaScript Regex 點餐解析引擎（動態比對資料庫資料）
         const processTextWithRegex = (textInput) => {
           isProcessing.value = true;
           statusMessage.value = '⚡ 瞬間解析中...';
 
           const cleanedText = normalizeText(textInput);
 
-          // 1. 抓取顧客姓名與餘額
           let matchedCustomer = { name: '未識別', id: null, balance: 0 };
           for (const key of Object.keys(customerMap.value)) {
             if (cleanedText.includes(key)) {
@@ -241,7 +251,6 @@
             }
           }
 
-          // 2. 動態生成品項匹配正則表達式
           const menuKeys = Object.keys(priceMap.value);
           if (menuKeys.length === 0) {
             statusMessage.value = '菜單資料為空，無法比對';
@@ -313,7 +322,7 @@
           }
         };
 
-        // 送出訂單：扣除 Supabase 帳戶餘額並寫入 orders 紀錄表
+        // 送出訂單與扣款
         const confirmOrder = async () => {
           const order = parsedOrder.value;
 
@@ -322,14 +331,16 @@
             return;
           }
 
-          // 如果識別出顧客，進行扣款檢查與處理
+          let newBalance = order.customer_balance;
+
+          // 若識別出顧客，進行扣款檢查與更新
           if (order.customer_id) {
             if (order.customer_balance < order.total_amount) {
               alert(`⚠️ 餘額不足！顧客現有餘額為 NT$ ${order.customer_balance}，無法完成扣款。`);
               return;
             }
 
-            const newBalance = order.customer_balance - order.total_amount;
+            newBalance = order.customer_balance - order.total_amount;
 
             // 1. 更新資料庫中的顧客餘額
             const { error: updateErr } = await supabaseClient
@@ -356,7 +367,13 @@
             console.error('訂單紀錄寫入失敗:', orderErr.message);
           }
 
-          alert('🎉 訂單已成功送出並完成扣款！');
+          // 3. 提示交易成功並顯示當前最新餘額
+          if (order.customer_id) {
+            alert(`🎉 訂單成功送出！\n\n【${order.customer_name}】完成扣款 NT$ ${order.total_amount}\n當前最新餘額為：NT$ ${newBalance}`);
+          } else {
+            alert(`🎉 訂單已成功送出！（非會員現金點餐）\n總金額：NT$ ${order.total_amount}`);
+          }
+
           await fetchDataFromDB(); // 刷新本地快取的顧客餘額
           resetForm();
         };
@@ -377,6 +394,7 @@
           finalTranscript,
           showModal,
           parsedOrder,
+          remainingBalance,
           toggleListening,
           confirmOrder,
           cancelOrder
