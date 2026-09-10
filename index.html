@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NVIX POS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <!-- 引入 Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-slate-100 min-h-screen p-4 flex flex-col items-center justify-center">
+
+  <div id="app" class="w-full max-w-md bg-white rounded-2xl shadow-xl p-6 space-y-6 relative">
+    
+    <h1 class="text-2xl font-bold text-slate-800 text-center pt-2">歡迎使用 NVIX 點餐系統</h1>
+
+    <!-- 語音辨識即時顯示區 -->
+    <div class="bg-slate-50 border border-slate-200 p-4 rounded-xl space-y-1 min-h-[100px]">
+      <p class="text-xs text-slate-400 font-bold">即時語音轉文字：</p>
+      <p class="text-slate-800 font-medium text-2xl break-words">
+        {{ currentTranscript || '' }}
+      </p>
+    </div>
+
+    <!-- 錄音/點餐操作區 -->
+    <div class="flex flex-col items-center justify-center space-y-4 pt-2">
+      <button 
+        @click="toggleListening"
+        :disabled="isProcessing"
+        :class="[
+          isListening ? 'bg-red-500 hover:bg-red-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700',
+          isProcessing ? 'opacity-50 cursor-not-allowed' : ''
+        ]"
+        class="w-36 h-36 rounded-full text-white font-bold text-lg shadow-lg transition duration-200 flex flex-col items-center justify-center">
+        <span class="text-6xl mb-1">{{ isListening ? '⏹️' : '🎙️' }}</span>
+      </button>
+      <p class="text-lg text-slate-600 font-medium h-8 text-center">
+        {{ statusMessage }}
+      </p>
+    </div>
+
+    <!-- 訂單確認彈窗 Modal -->
+    <div v-if="showModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4 border border-slate-100">
+        <h2 class="text-xl font-bold text-slate-800 border-b pb-2">請確認訂單資料</h2>
+        
+        <div class="space-y-2 text-sm text-slate-600">
+          <div class="flex justify-between items-center">
+            <span class="font-bold">顧客姓名：</span>
+            <span class="text-indigo-600 font-semibold">{{ parsedOrder.customer_name || '未識別' }}</span>
+          </div>
+          
+          <div v-if="parsedOrder.customer_id" class="flex justify-between items-center text-xs text-slate-500 bg-slate-50 p-2 rounded">
+            <span>當前帳戶餘額：</span>
+            <span class="font-bold text-slate-700">NT$ {{ parsedOrder.customer_balance }}</span>
+          </div>
+
+          <div class="border-t my-2 pt-2">
+            <p class="font-bold mb-1">點餐品項：</p>
+            <ul v-if="parsedOrder.items && parsedOrder.items.length > 0" class="space-y-1">
+              <li v-for="(item, index) in parsedOrder.items" :key="index" class="flex justify-between bg-slate-50 p-2 rounded">
+                <span>{{ item.name }} x {{ item.qty }}</span>
+                <span>NT$ {{ item.price * item.qty }}</span>
+              </li>
+            </ul>
+            <p v-else class="text-xs text-rose-500 py-2">⚠️ 未能比對到菜單品項，請重新確認</p>
+          </div>
+
+          <div class="flex justify-between text-base font-bold text-slate-800 border-t pt-2">
+            <span>總金額：</span>
+            <span class="text-emerald-600">NT$ {{ parsedOrder.total_amount || 0 }}</span>
+          </div>
+        </div>
+
+        <div class="flex space-x-3 pt-2">
+          <button @click="cancelOrder" class="flex-1 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition">
+            取消
+          </button>
+          <button @click="confirmOrder" class="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold transition">
+            確認送出扣款
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    const { createApp, ref, onMounted } = Vue;
+
+    // ------------------------------------------------------------------
+    // Supabase 設定（請將下面的 URL 與 ANON KEY 替換為你在 Supabase 的設定）
+    // ------------------------------------------------------------------
+    const SUPABASE_URL = 'https://lzcrebktvlteiyrrcewo.supabase.co'; 
+    const SUPABASE_ANON_KEY = '請在此貼上你的_anon_public_key';
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    createApp({
+      setup() {
+        const isListening = ref(false);
+        const isProcessing = ref(false);
+        const statusMessage = ref('資料讀取中...');
+        const currentTranscript = ref('');
+        const finalTranscript = ref('');
+        const showModal = ref(false);
+        const parsedOrder = ref({});
+
+        // 從資料庫動態載入的對照字典
+        const customerMap = ref({}); // { "老黃": { id: 1, fullName: "黃大雄", balance: 1000 } }
+        const priceMap = ref({});    // { "咖啡": 80, "紅茶": 40 }
+
+        let recognition = null;
+
+        // 常見語音轉文字錯字自動修正字典
+        const FIX_SPELL_MAP = {
+          "首沖": "手沖",
+          "美事": "美式",
+          "鮮綠": "綠茶"
+        };
+
+        // 從 Supabase 載入顧客與菜單資料
+        const fetchDataFromDB = async () => {
+          try {
+            statusMessage.value = '連線資料庫中...';
+
+            // 1. 抓取菜單資料
+            const { data: menuData, error: menuErr } = await supabaseClient
+              .from('menu_items')
+              .select('name, price')
+              .eq('is_available', true);
+
+            if (menuErr) throw menuErr;
+
+            const pMap = {};
+            menuData.forEach(item => {
+              pMap[item.name] = item.price;
+            });
+            priceMap.value = pMap;
+
+            // 2. 抓取顧客資料與帳戶餘額
+            const { data: customerData, error: custErr } = await supabaseClient
+              .from('customers')
+              .select('id, nickname, full_name, balance');
+
+            if (custErr) throw custErr;
+
+            const cMap = {};
+            customerData.forEach(c => {
+              cMap[c.nickname] = {
+                id: c.id,
+                fullName: c.full_name,
+                balance: c.balance
+              };
+            });
+            customerMap.value = cMap;
+
+            statusMessage.value = '按一下麥克風開始點餐';
+          } catch (err) {
+            console.error('資料庫連線失敗:', err);
+            statusMessage.value = '⚠️ 資料庫讀取失敗，請確認 Key 設定';
+          }
+        };
+
+        onMounted(() => {
+          fetchDataFromDB();
+
+          // 初始化 Web Speech API
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'zh-TW';
+
+            recognition.onresult = (event) => {
+              let transcript = '';
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                transcript += event.results[i][0].transcript;
+              }
+              if (transcript.trim()) {
+                currentTranscript.value = transcript;
+              }
+            };
+
+            recognition.onerror = (event) => {
+              if (event.error !== 'no-speech') {
+                console.error('語音辨識錯誤:', event.error);
+                statusMessage.value = '語音辨識錯誤：' + event.error;
+              }
+              isListening.value = false;
+            };
+
+            recognition.onend = () => {
+              if (isListening.value) {
+                try {
+                  recognition.start();
+                } catch(e) {
+                  console.log("自動重啟忽略");
+                }
+              }
+            };
+          } else {
+            alert('您的瀏覽器不支援 Web Speech API，請使用 Chrome 或 iOS Safari 瀏覽器。');
+          }
+        });
+
+        // 轉換中文數字為阿拉伯數字與校正錯字
+        function normalizeText(text) {
+          const cnNums = { '一': '1', '二': '2', '兩': '2', '三': '3', '四': '4', '五': '5', '六': '6', '七': '7', '八': '8', '九': '9', '十': '10' };
+          let result = text;
+          
+          for (const [wrong, correct] of Object.entries(FIX_SPELL_MAP)) {
+            result = result.replaceAll(wrong, correct);
+          }
+
+          for (const [cn, num] of Object.entries(cnNums)) {
+            result = result.replaceAll(cn, num);
+          }
+          return result;
+        }
+
+        // 純 JavaScript Regex 點餐解析引擎（動態比對資料庫資料）
+        const processTextWithRegex = (textInput) => {
+          isProcessing.value = true;
+          statusMessage.value = '⚡ 瞬間解析中...';
+
+          const cleanedText = normalizeText(textInput);
+
+          // 1. 抓取顧客姓名與餘額
+          let matchedCustomer = { name: '未識別', id: null, balance: 0 };
+          for (const key of Object.keys(customerMap.value)) {
+            if (cleanedText.includes(key)) {
+              const cInfo = customerMap.value[key];
+              matchedCustomer = {
+                name: cInfo.fullName,
+                id: cInfo.id,
+                balance: cInfo.balance
+              };
+              break;
+            }
+          }
+
+          // 2. 動態生成品項匹配正則表達式
+          const menuKeys = Object.keys(priceMap.value);
+          if (menuKeys.length === 0) {
+            statusMessage.value = '菜單資料為空，無法比對';
+            isProcessing.value = false;
+            return;
+          }
+
+          const menuItemsRegexStr = menuKeys.join('|');
+          const itemRegex = new RegExp(`(\\d+)\\s*(?:杯|份|個|張)?\\s*(?:冰|熱|大|小)?\\s*(${menuItemsRegexStr})`, 'g');
+
+          const items = [];
+          let calculatedTotal = 0;
+          let match;
+
+          while ((match = itemRegex.exec(cleanedText)) !== null) {
+            const qty = parseInt(match[1], 10);
+            const itemName = match[2];
+            const price = priceMap.value[itemName] || 0;
+
+            items.push({
+              name: itemName,
+              qty: qty,
+              price: price
+            });
+
+            calculatedTotal += price * qty;
+          }
+
+          parsedOrder.value = {
+            customer_id: matchedCustomer.id,
+            customer_name: matchedCustomer.name,
+            customer_balance: matchedCustomer.balance,
+            items: items,
+            total_amount: calculatedTotal
+          };
+
+          showModal.value = true;
+          statusMessage.value = '解析完成！';
+          isProcessing.value = false;
+        };
+
+        const toggleListening = async () => {
+          if (!recognition) return;
+
+          if (!isListening.value) {
+            currentTranscript.value = '';
+            try {
+              recognition.start();
+              isListening.value = true;
+              statusMessage.value = '確認無誤後，請再次點擊按鈕進行下一步';
+            } catch (e) {
+              console.error(e);
+            }
+          } else {
+            isListening.value = false;
+            recognition.stop();
+            
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            const textToProcess = currentTranscript.value.trim();
+            finalTranscript.value = textToProcess;
+
+            if (!textToProcess) {
+              statusMessage.value = '未聽見聲音，請再試一次。';
+              return;
+            }
+
+            processTextWithRegex(textToProcess);
+          }
+        };
+
+        // 送出訂單：扣除 Supabase 帳戶餘額並寫入 orders 紀錄表
+        const confirmOrder = async () => {
+          const order = parsedOrder.value;
+
+          if (order.items.length === 0) {
+            alert('⚠️ 無有效點餐品項，無法送出訂單');
+            return;
+          }
+
+          // 如果識別出顧客，進行扣款檢查與處理
+          if (order.customer_id) {
+            if (order.customer_balance < order.total_amount) {
+              alert(`⚠️ 餘額不足！顧客現有餘額為 NT$ ${order.customer_balance}，無法完成扣款。`);
+              return;
+            }
+
+            const newBalance = order.customer_balance - order.total_amount;
+
+            // 1. 更新資料庫中的顧客餘額
+            const { error: updateErr } = await supabaseClient
+              .from('customers')
+              .update({ balance: newBalance })
+              .eq('id', order.customer_id);
+
+            if (updateErr) {
+              alert('扣款失敗：' + updateErr.message);
+              return;
+            }
+          }
+
+          // 2. 寫入訂單紀錄表
+          const { error: orderErr } = await supabaseClient
+            .from('orders')
+            .insert([{
+              customer_id: order.customer_id,
+              type: 'order',
+              total_amount: order.total_amount
+            }]);
+
+          if (orderErr) {
+            console.error('訂單紀錄寫入失敗:', orderErr.message);
+          }
+
+          alert('🎉 訂單已成功送出並完成扣款！');
+          await fetchDataFromDB(); // 刷新本地快取的顧客餘額
+          resetForm();
+        };
+
+        const cancelOrder = () => resetForm();
+
+        const resetForm = () => {
+          showModal.value = false;
+          currentTranscript.value = '';
+          statusMessage.value = '按一下麥克風開始點餐';
+        };
+
+        return {
+          isListening,
+          isProcessing,
+          statusMessage,
+          currentTranscript,
+          finalTranscript,
+          showModal,
+          parsedOrder,
+          toggleListening,
+          confirmOrder,
+          cancelOrder
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
